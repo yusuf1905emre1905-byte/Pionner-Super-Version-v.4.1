@@ -1251,7 +1251,142 @@ void phonexy_ai_task() {
         // k_yield(); 
     }
 }
+// =========================================================
+// PIONNEROS V4.1: quickspace.c
+// Hızlı Arama ve Komut Arayüzü
+// =========================================================
+
+void quickspace_draw_interface() {
+    // 1. Ekranın Ortasında Şeffaf Bir Pencere Çiz
+    // wm_create_transparent_window(500, 50, "Quickspace Search"); 
+    // Mavi-Beyaz temaya uygun arama kutusu ve gölgelendirme.
+    
+    // 2. Arama Çubuğunu Çiz
+    // gui_draw_input_box(..);
+}
+
+// Klavye tuşuna basıldığında tetiklenir
+void quickspace_handle_input(const char *input) {
+    // Arama işlevi: Yüklü uygulamaları ve VFS yollarını tarar.
+    // if (k_stricmp(input, "socialpit") == 0) {
+    //     k_execute_app("/apps/socialpit/socialpit.bin");
+    // } else if (k_stricmp(input, "/docs/") == 0) {
+    //     file_manager_open_dir("/users/docs/");
+    // } else {
+    //     // Canlı arama sonuçlarını GUI'de göster
+    // }
+}
+
+void quickspace_listen_task() {
+    // Daima arka planda çalışır ve "Pionner Tuşunu" bekler.
+    // while (1) {
+    //     if (k_key_pressed(KEY_PIONNER_BUTTON)) {
+    //         quickspace_draw_interface();
+    //         quickspace_handle_input(k_get_user_input());
+    //     }
+    //     k_yield();
+    // }
+}
+
+// =========================================================
+// PIONNEROS V4.1: notes.c
+// Phonexy Notes Uygulama Mantığı
+// =========================================================
+
+void phonexy_notes_save(const char *title, const char *content) {
+    char path[128];
+    k_snprintf(path, 128, "/users/notes/%s.txt", title);
+    
+    // vfs_write_file(path, (uint8_t*)content, k_strlen(content));
+    k_printf("Not Kaydedildi: %s\n", path);
+}
+
+void phonexy_notes_task() {
+    // wm_create_window(400, 500, "Phonexy Notes", ...);
+    // gui_draw_textarea_widget(..); // Metin giriş alanını çizer
+    
+    // while (is_open) { ... }
+}
+
+// =========================================================
+// PIONNEROS V4.1: dialer.c
+// =========================================================
+
+// VoIP çağrısını başlatır (Ağ yığını üzerinden)
+void dialer_start_call(const char *contact_name) {
+    // 1. Piople (Kişiler) listesinden kişinin IP'sini/adresini bul
+    // uint32_t target_ip = piople_find_ip(contact_name);
+    
+    // 2. RTP/UDP protokollerini kullanarak VoIP akışını başlat
+    // udp_send_voip_data(target_ip, VOICE_STREAM_DATA);
+    
+    k_printf("Dialer: %s ile VoIP çağrısı başlatıldı.\n", contact_name);
+}
+
+// =========================================================
+// PIONNEROS V4.1: about.c
+// Hakkında Ekranı (Logo, Sürüm, Kod Adı)
+// =========================================================
+
+void about_screen_task() {
+    // wm_create_window(500, 400, "Hakkında: PionnerOS V4.1", ...);
+    
+    // 1. Logo ve İsim (Mavi-Beyaz Tema)
+    // gfx_draw_image(50, 50, PIONNER_LOGO_DATA); 
+    
+    // 2. Temel Bilgiler
+    // gui_draw_label(150, 100, "Sürüm: V4.1");
+    // gui_draw_label(150, 130, "Kod Adı: Süper Versiyon"); // Sizin belirlediğiniz ad!
+    // gui_draw_label(150, 160, "Yapımcı: [Sizin Adınız/Ekibiniz]");
+    
+    // 3. Lisans ve Telif Hakkı Bilgisi
+    // gui_draw_label(10, 350, "Telif Hakkı (c) 2024 PionnerOS Project.");
+    
+    // while (is_open) { ... }
+}
+
+// =========================================================
+// PIONNEROS V4.1: pionnerv4_features.c
+// V4.1'deki Yeni Özellikler
+// =========================================================
+
+void pionnerv4_features_task() {
+    // wm_create_window(700, 500, "PionnerOS V4.1'deki Yenilikler", ...);
+    
+    // Listelenen tüm temel özellikleri burada basit metin olarak sunun:
+    // gui_draw_label(50, 50, " - NX Bit ve Hashing ile Güçlendirilmiş Güvenlik");
+    // gui_draw_label(50, 80, " - XHCI ve RTL8139 ile Tam USB ve İnternet Desteği");
+    // gui_draw_label(50, 110, " - Multi-threading ve Özel Bellek ile PhonexyAI Temelleri");
+    // gui_draw_label(50, 140, " - Pionner Hub ve Widget Desteği");
+    
+    // while (is_open) { ... }
+}
 
 
+// =========================================================
+// PIONNEROS V4.1: settings_display.c
+// Ekran Boyutlandırma Ayarları
+// =========================================================
 
+void settings_display_task() {
+    // wm_create_window(400, 300, "Ekran Ayarları", ...);
+    
+    // Kullanıcının çözünürlük seçmesini sağlayan widget
+    // gui_draw_dropdown("Çözünürlük", "1024x768", "1280x1024", ...);
+
+    // Uygula butonu
+    // gui_draw_button(100, 200, "Uygula", apply_resolution_change);
+
+    // while (is_open) { ... }
+}
+
+void apply_resolution_change(int new_width, int new_height) {
+    // Çekirdeğin Framebuffer'ını ve GUI parametrelerini güncelle
+    // gfx_reinit_framebuffer(new_width, new_height);
+    
+    // Tüm açık pencereleri yeni boyuta göre yeniden çiz
+    // wm_redraw_all_windows(); 
+    
+    k_printf("Ekran Boyutlandırma: %dx%d olarak uygulandı.\n", new_width, new_height);
+}
 

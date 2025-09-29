@@ -648,3 +648,136 @@ void init_nx_protection() {
     k_printf("Güvenlik: NX (No-Execute) Koruması Paging'e uygulandı.\n");
 }
 
+// =========================================================
+// PIONNEROS V4.1: arp.h
+// ARP Protokolü Paket Yapısı
+// =========================================================
+
+#include <stdint.h>
+
+// Ethernet Frame Başlığı (Ham verinin en başı)
+typedef struct {
+    uint8_t dest_mac[6];    // Hedef MAC Adresi (Örn: Yönlendiricinin MAC'i)
+    uint8_t src_mac[6];     // Kaynak MAC Adresi (Sizin kartınızın MAC'i)
+    uint16_t type;          // Üst Protokol Tipi (ARP için 0x0806)
+} __attribute__((packed)) ethernet_frame_t;
+
+// ARP Paket Yapısı
+typedef struct {
+    uint16_t h_type;        // Donanım Tipi (Ethernet için 0x0001)
+    uint16_t p_type;        // Protokol Tipi (IPv4 için 0x0800)
+    uint8_t h_len;          // Donanım Adresi Uzunluğu (MAC için 6)
+    uint8_t p_len;          // Protokol Adresi Uzunluğu (IPv4 için 4)
+    uint16_t opcode;        // İşlem Kodu (İstek: 1, Cevap: 2)
+    
+    uint8_t sender_mac[6];  // Gönderici MAC Adresi (Sizin kartınız)
+    uint32_t sender_ip;     // Gönderici IP Adresi (Sizin IP'niz)
+    
+    uint8_t target_mac[6];  // Hedef MAC Adresi (İstek için 00:00:00:00:00:00)
+    uint32_t target_ip;     // Hedef IP Adresi (Örn: Yönlendiricinin IP'si)
+} __attribute__((packed)) arp_packet_t;
+
+// =========================================================
+// PIONNEROS V4.1: arp.c
+// ARP Protokolü Uygulaması
+// =========================================================
+
+// MAC-IP eşleşmelerini tutan önbellek (Cache)
+typedef struct {
+    uint32_t ip;
+    uint8_t mac[6];
+} arp_cache_entry_t;
+arp_cache_entry_t arp_cache[32]; // 32 girişli basit önbellek
+
+// IP adresi için MAC adresini bulmaya çalışır (önbellek veya ağ üzerinden)
+int arp_resolve_mac(uint32_t target_ip, uint8_t *mac_out) {
+    // 1. Önbelleği Kontrol Et
+    for (int i = 0; i < 32; i++) {
+        if (arp_cache[i].ip == target_ip) {
+            memcpy(mac_out, arp_cache[i].mac, 6);
+            return 1; // Başarılı: MAC adresi önbellekte bulundu.
+        }
+    }
+    
+    // 2. Önbellekte Yoksa: Ağ Üzerinden ARP İsteği Gönder
+    // create_arp_request_packet(target_ip);
+    // rtl8139_send_packet(arp_request_packet, sizeof(arp_request_packet));
+    
+    // 3. Cevap Bekle (Asenkron - Cevap, kesme ile gelir)
+    return 0; // Bekliyor
+}
+
+// Gelen ARP Paketini İşle
+void arp_handle_packet(const uint8_t *data, size_t length) {
+    arp_packet_t *arp_p = (arp_packet_t *)(data + sizeof(ethernet_frame_t));
+    
+    // Yönlendiricinizden (veya ağdan) gelen bir cevapsa
+    if (arp_p->opcode == 2) { // 2 = Cevap (Reply)
+        // Önbelleğe kaydet (Bundan sonra direkt kullanabiliriz)
+        // arp_cache_add(arp_p->sender_ip, arp_p->sender_mac);
+        k_printf("ARP: Yeni MAC adresi önbelleğe eklendi.\n");
+    }
+}
+
+// =========================================================
+// PIONNEROS V4.1: ip.h
+// IPv4 Protokolü Başlık Yapısı
+// =========================================================
+
+#define IP_PROTOCOL_ICMP 0x01 // Ping
+#define IP_PROTOCOL_TCP  0x06 // Pionner Tarayıcı, SocialPit
+#define IP_PROTOCOL_UDP  0x11 // Hızlı veri iletişimi
+
+typedef struct {
+    uint8_t  ihl:4;         // Başlık Uzunluğu (Genellikle 5)
+    uint8_t  version:4;     // Versiyon (IPv4 için 4)
+    uint8_t  tos;           // Servis Tipi
+    uint16_t total_length;  // Başlık + Veri dahil Toplam Paket Uzunluğu
+    uint16_t id;            // Tanımlayıcı
+    uint16_t frag_offset;   // Parçalama Bilgisi
+    uint8_t  ttl;           // Yaşam Süresi (Her yönlendiricide 1 azalır)
+    uint8_t  protocol;      // Üst Katman Protokolü (TCP veya UDP)
+    uint16_t checksum;      // Başlık Kontrol Toplamı
+    uint32_t src_ip;        // Kaynak IP Adresi (Sizin IP'niz)
+    uint32_t dest_ip;       // Hedef IP Adresi (Örn: Sunucu IP'si)
+} __attribute__((packed)) ip_header_t;
+
+// =========================================================
+// PIONNEROS V4.1: ip.c
+// IP Protokolü Uygulaması
+// =========================================================
+
+void ip_handle_packet(const uint8_t *data, size_t length) {
+    // Ham veriden Ethernet başlığını atla
+    ip_header_t *ip_h = (ip_header_t *)(data + sizeof(ethernet_frame_t));
+    
+    // 1. Versiyon Kontrolü
+    if (ip_h->version != 4) return; // Sadece IPv4 destekliyoruz
+    
+    // 2. TTL (Yaşam Süresi) Kontrolü
+    if (ip_h->ttl == 0) return; // Paketin ömrü dolmuş
+    
+    // 3. Hedef IP Kontrolü
+    if (ip_h->dest_ip != your_own_ip_address) return; // Paket bizim için değil
+    
+    // 4. Üst Protokol Yönlendirme
+    uint8_t *payload = data + sizeof(ethernet_frame_t) + (ip_h->ihl * 4);
+    size_t payload_len = ip_h->total_length - (ip_h->ihl * 4);
+
+    switch (ip_h->protocol) {
+        case IP_PROTOCOL_ICMP:
+            // icmp_handle_packet(payload, payload_len);
+            break;
+        case IP_PROTOCOL_TCP:
+            // tcp_handle_packet(payload, payload_len, ip_h->src_ip); 
+            break;
+        case IP_PROTOCOL_UDP:
+            // udp_handle_packet(payload, payload_len, ip_h->src_ip);
+            break;
+        default:
+            // Bilinmeyen protokol
+            break;
+    }
+}
+
+

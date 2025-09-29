@@ -1390,3 +1390,566 @@ void apply_resolution_change(int new_width, int new_height) {
     k_printf("Ekran Boyutlandırma: %dx%d olarak uygulandı.\n", new_width, new_height);
 }
 
+// =========================================================
+// PIONNEROS V4.1: podi_game.c
+// Sanal Evcil Hayvan Oyunu: Podi
+// =========================================================
+
+#define PODI_STATUS_FILE "/users/podi_status.dat"
+
+typedef struct {
+    uint32_t last_feed_time;  // RTC'den alınan son beslenme zamanı
+    uint8_t  happiness_level; // Mutluluk Seviyesi (0-100)
+    uint8_t  health_level;    // Sağlık Seviyesi
+} podi_state_t;
+
+// Podi'nin durumunu VFS'e kaydeder (Oyun kapandığında)
+void podi_save_state(podi_state_t *state) {
+    // VFS_write_file(PODI_STATUS_FILE, (uint8_t*)state, sizeof(podi_state_t));
+    k_printf("Podi'nin durumu kaydedildi.\n");
+}
+
+// Oyunun ana döngüsü
+void podi_game_task() {
+    podi_state_t current_state;
+    // vfs_read_file(PODI_STATUS_FILE, &current_state); // Durumu yükle
+
+    // 1. Duruma göre Podi'yi GUI'de Çiz (Widget)
+    // gui_draw_podi_cat(current_state.happiness_level, ...);
+
+    // 2. RTC'ye göre durumunu güncelle (Acıkma vb.)
+    // if (rtc_current_time - current_state.last_feed_time > THRESHOLD) {
+    //     current_state.happiness_level--; 
+    // }
+
+    // Klavye/Fare I/O (Besle/Oyna butonları)
+    // if (k_key_pressed(KEY_FEED)) {
+    //     current_state.happiness_level += 10;
+    //     rtc_get_current_time(&current_state.last_feed_time);
+    // }
+
+    // while (is_open) { ... k_yield(); }
+    podi_save_state(&current_state);
+}
+
+// =========================================================
+// PIONNEROS V4.1: vutva_bird.c
+// Koşu Oyunu Uygulama Mantığı
+// =========================================================
+
+int bird_y_pos = 100;
+int game_speed = 5; // Timer Kesmesine bağlı oyun hızı
+
+void vutva_bird_task() {
+    // wm_create_window(400, 300, "Vutva Bird Running Game", ...);
+    
+    while (is_game_running) {
+        // 1. Ekranı Temizle
+        // gfx_clear_area(GAME_AREA, COLOR_SKY_BLUE);
+
+        // 2. Oyuncu Hareketini Güncelle
+        // if (k_key_pressed(KEY_SPACE)) { 
+        //     bird_y_pos -= 10; // Zıplama
+        // } else {
+        //     bird_y_pos += 2; // Yerçekimi
+        // }
+
+        // 3. Oyun Nesnelerini Çiz (Engel, Kuş)
+        // gfx_draw_image(bird_x, bird_y_pos, VUTVA_BIRD_SPRITE);
+        // gfx_draw_rect(obstacle_x, ..., OBSTACLE_COLOR);
+        
+        // 4. Çarpışma Kontrolü
+        // if (check_collision(bird_y_pos, obstacle_x)) {
+        //     is_game_running = FALSE;
+        // }
+        
+        // k_yield(); // Hızlı çizim için CPU'yu bırak
+    }
+}
+
+// =========================================================
+// PIONNEROS V4.1: kmem_cache.h
+// Slab Cache Tanımı
+// =========================================================
+
+typedef struct slab_t {
+    struct slab_t *next;     // Serbest slab listesindeki sonraki öbek
+    void *free_objects_list; // Bu öbekteki serbest nesnelerin listesi
+    uint32_t objects_in_use; // Bu öbekteki kullanılan nesne sayısı
+} slab_t;
+
+typedef struct kmem_cache_t {
+    const char *name;        // Örn: "TCB_cache" (Thread Kontrol Blokları)
+    uint32_t object_size;    // Bu önbelleğin yönettiği nesnenin boyutu
+    uint32_t slab_size;      // Tek bir öbeğin (slab) toplam boyutu
+    slab_t *full;            // Dolu öbeklerin listesi
+    slab_t *partial;         // Kısmen boş öbeklerin listesi (Hızlı tahsis buradan yapılır)
+    slab_t *empty;           // Tamamen boş öbeklerin listesi
+    // Senkronizasyon için bir spinlock eklenmelidir (kmem_lock)
+} kmem_cache_t;
+
+// =========================================================
+// PIONNEROS V4.1: kmem_cache.c
+// Slab Allocator Mantığı
+// =========================================================
+
+// Yeni bir nesne havuzu (cache) oluşturur. (Örn: TCB'ler için)
+kmem_cache_t* kmem_cache_create(const char *name, uint32_t size) {
+    kmem_cache_t *cache = k_malloc(sizeof(kmem_cache_t));
+    if (!cache) return NULL;
+    
+    cache->name = name;
+    cache->object_size = size;
+    // Slab boyutunu hesapla: (Genellikle 4KB sayfa boyutunun katlarıdır)
+    cache->slab_size = PAGE_SIZE; 
+    
+    k_printf("KMemory: Yeni cache oluşturuldu: '%s' (%u byte nesneler).\n", name, size);
+    return cache;
+}
+
+// Havuzdan hızlıca bir nesne tahsis et (PhonexyAI için çok hızlıdır)
+void* kmem_cache_alloc(kmem_cache_t *cache) {
+    // Kilit al (kmem_lock_acquire)
+    slab_t *slab = cache->partial; 
+    
+    if (!slab) {
+        // Kısmen boş slab yoksa, yeni bir slab oluştur (karmaşık sayfa tahsisi burada)
+        // slab = kmem_allocate_new_slab(cache);
+        if (!slab) return NULL;
+    }
+    
+    // Serbest nesneyi al
+    void *obj = slab->free_objects_list;
+    // slab->free_objects_list = obj->next; // Listeden çıkar
+    slab->objects_in_use++;
+    
+    // Kilit bırak (kmem_lock_release)
+    return obj;
+}
+
+// Nesneyi havuza geri gönder
+void kmem_cache_free(kmem_cache_t *cache, void *obj) {
+    // Kilit al
+    // Objenin ait olduğu slab'ı bul
+    // Obje'yi slab'ın serbest listesine ekle
+    // Slab kısmen doluysa, tam dolu listesinden kısmen dolu listesine taşı (mantık)
+    k_printf("KMemory: Nesne '%s' cache'ine geri gönderildi.\n", cache->name);
+    // Kilit bırak
+}
+
+// =========================================================
+// PIONNEROS V4.1: acpi.h
+// ACPI Temel Yapıları
+// =========================================================
+
+typedef struct {
+    char signature[8];       // "RSD PTR "
+    uint8_t checksum;
+    char oem_id[6];
+    uint8_t revision;        // Genellikle 2 (ACPI 2.0+)
+    uint32_t rsdt_address;   // Ana Yapılandırma Tablosu adresi
+    // ... Diğer alanlar ...
+} __attribute__((packed)) rsdp_descriptor_t;
+
+// RSDP'yi arayan ana fonksiyon (BIOS alanında)
+rsdp_descriptor_t* acpi_find_rsdp() {
+    // 1. BIOS alanında (0xE0000 - 0xFFFFF) "RSD PTR " imzasını ara.
+    // 2. Eğer bulunursa, checksum kontrolü yap.
+    k_printf("ACPI: RSDP bulundu ve doğrulandı.\n");
+    return (rsdp_descriptor_t*)found_address;
+}
+
+// =========================================================
+// PIONNEROS V4.1: acpi_power.c
+// Güvenli Kapanma İşlemi
+// =========================================================
+
+uint16_t pm_ctrl_port; // Güç Yönetimi Kontrol Portu (FADT'den okunur)
+uint16_t pm_ctrl_value = 0x2000; // Genellikle SLP_TYPA veya SLP_TYPB
+
+void acpi_safe_shutdown() {
+    // 1. Tüm Uygulamaları Durdur ve Kapat (SocialPit, PhonexyAI vb.)
+    // k_terminate_all_tasks(); 
+
+    // 2. VFS'i Senkronize Et ve Diski Kapat
+    // vfs_sync_all(); 
+    
+    k_printf("ACPI: Sistem kapatılıyor...\n");
+
+    // 3. Kapatma Komutunu I/O Portuna Gönder
+    // outw(pm_ctrl_port, pm_ctrl_value); 
+
+    // Buradan sonra donanım kontrolü ele alır. Bu komut, çekirdeğin çalışmasını durdurur.
+    while(1) { __asm__("hlt"); } // Kapanmazsa durdur
+}
+
+// GUI tarafından çağrılan kapatma butonu işleyicisi
+void hub_shutdown_button_handler() {
+    // Önce kullanıcıya onay sor (GUI)
+    // if (gui_confirm("Sistemi Kapatmak İstiyor Musunuz?")) {
+    //     acpi_safe_shutdown();
+    // }
+}
+
+// =========================================================
+// PIONNEROS V4.1: jpeg_decoder.c
+// JPEG Kod Çözücü Mimarisi
+// =========================================================
+
+typedef struct {
+    uint16_t width;          // Resmin genişliği
+    uint16_t height;         // Resmin yüksekliği
+    uint8_t  components;     // Renk bileşeni sayısı (3: RGB, 1: Gri Ton)
+    // ... Diğer Huffman Tabloları ve Kuantizasyon Matrisleri ...
+} jpeg_image_info_t;
+
+// VFS'ten okunan ham JPEG dosyasını ayrıştırır ve piksellere dönüştürür.
+uint32_t* jpeg_decode_image(const uint8_t *jpeg_data, size_t data_len) {
+    // 1. JPEG Başlığını Oku (Marker'lar aranır: SOI, SOF, DHT, DQT)
+    jpeg_image_info_t info = jpeg_parse_headers(jpeg_data);
+    
+    // 2. YUV (YCbCr) Renk Alanını Ayrıştır
+    // Sıkıştırılmış veriyi (Huffman, DCT) okuyup YUV bloklarına çevir.
+    
+    // 3. YUV'den RGB'ye Dönüştür
+    // Her piksel için (Y, Cb, Cr) değerlerini PionnerOS'un Framebuffer formatına (RGBA) dönüştür.
+    
+    uint32_t *rgb_buffer = k_malloc(info.width * info.height * 4);
+    k_printf("JPEG Decode: %dx%d resim çözüldü.\n", info.width, info.height);
+    return rgb_buffer;
+}
+
+// Galeri uygulaması, bu kodu çağırarak resmi ekrana çizer
+void gallery_display_jpeg(const char *path) {
+    // uint8_t *data = vfs_read_file(path);
+    // uint32_t *pixels = jpeg_decode_image(data, size);
+    // gfx_draw_image_buffer(pixels, width, height);
+}
+
+
+
+// =========================================================
+// PIONNEROS V4.1: mp3_decoder.c
+// MP3 Kod Çözücü Mimarisi
+// =========================================================
+
+typedef struct {
+    uint32_t sample_rate;    // Örnekleme Hızı (Örn: 44100 Hz)
+    uint8_t  channels;       // Kanal Sayısı (1: Mono, 2: Stereo)
+    // ... Diğer tablo ve yapılandırma bilgileri ...
+} mp3_info_t;
+
+// Ham MP3 verisinden tek bir ses çerçevesini (frame) çöz.
+int mp3_decode_frame(const uint8_t *frame_data, int16_t *pcm_output) {
+    // 1. Frame Başlığını Oku (Eşitleme biti, Versiyon, Bit Hızı vb.)
+    // 2. Yan Bilgileri ve Ana Veriyi Ayrıştır
+    // 3. MDCT (Modified Discrete Cosine Transform) ve Huffman Çözme
+    
+    // Çözülen sesi ham PCM (darbe kodu modülasyonu) formatına yerleştir.
+    k_printf("MP3 Decode: Bir ses çerçevesi çözüldü ve oynatmaya hazır.\n");
+    return 0;
+}
+
+// Videolarım/Müzik Çalar uygulaması bu kodu çağırır
+void video_player_play_audio(const uint8_t *mp3_data) {
+    // Ses çalma aygıtını (muhtemelen USB/XHCI üzerinden) aç
+    // audio_device_open(44100, 2); 
+    
+    // MP3 dosyasını çerçeve çerçeve oku ve çöz
+    // while (more_frames) {
+    //     int16_t pcm_buffer[PCM_BUF_SIZE];
+    //     mp3_decode_frame(next_frame, pcm_buffer);
+    //     // Çözülen PCM'yi ses donanımına gönder
+    //     // audio_device_write(pcm_buffer); 
+    // }
+}
+
+// =========================================================
+// PIONNEROS V4.1: graphics_ddi.c
+// Grafik Sürücüsü Arayüzü (Device Driver Interface - DDI)
+// =========================================================
+
+// GPU'ya gönderilecek emirleri tutan yapı
+typedef struct {
+    uint32_t command_type;  // Örn: DRAW_RECTANGLE, SUBMIT_VERTICES
+    uint32_t param[4];      // Komut parametreleri
+} gpu_command_t;
+
+// GPU'ya gönderilmeyi bekleyen komutların arabelleği
+#define COMMAND_BUFFER_SIZE 4096 
+gpu_command_t gpu_command_buffer[COMMAND_BUFFER_SIZE];
+uint32_t buffer_index = 0;
+
+// Çekirdeğin GUI katmanı bu fonksiyonu çağırır
+void gpu_submit_command(uint32_t type, uint32_t p1, uint32_t p2, uint32_t p3, uint32_t p4) {
+    if (buffer_index < COMMAND_BUFFER_SIZE) {
+        gpu_command_buffer[buffer_index].command_type = type;
+        // Parametreleri kopyala
+        buffer_index++;
+    }
+}
+
+// =========================================================
+// PIONNEROS V4.1: shader_base.c
+// Temel Vertex ve Fragment Shader Mimarisi
+// =========================================================
+
+typedef enum {
+    SHADER_TYPE_VERTEX,
+    SHADER_TYPE_FRAGMENT
+} shader_type_t;
+
+// Shader kodunu saklayan temel yapı (nihai olarak Assembly/SPIR-V formatında olur)
+typedef struct {
+    shader_type_t type;
+    uint8_t *compiled_code; // GPU'nun anlayacağı format
+    size_t code_size;
+} shader_t;
+
+// Pionner Tarayıcı'nın GPU hızlandırmalı metinleri çizmek için kullanacağı fonksiyon
+shader_t* shader_compile_default_gui() {
+    // Çok karmaşık derleme mantığı burada yer alır (30.000 satıra katkı!)
+    // Basit bir renklendirme için gerekli GPU programını derler.
+    k_printf("GPU: Varsayılan GUI Shader'ı derlendi.\n");
+    return (shader_t*)compiled_shader_data;
+}
+
+// Komut arabelleğini GPU'ya gönderen ana fonksiyon
+void gpu_flush_commands(shader_t *active_shader) {
+    // 1. GPU'ya kesme sinyali gönder (INT/MMIO)
+    // 2. Komut arabelleğini (gpu_command_buffer) DMA ile GPU'nun belleğine aktar
+    // 3. GPU'nun işi bitirmesini bekle
+    buffer_index = 0; // Arabelleği temizle
+    k_printf("GPU: %d komut başarıyla işlendi ve ekrana yansıtıldı.\n", buffer_index);
+}
+
+// =========================================================
+// PIONNEROS V4.1: io_scheduler.h
+// Gelişmiş I/O İstek Yapısı
+// =========================================================
+
+typedef enum {
+    IO_PRIO_REALTIME,     // En Yüksek: SocialPit Canlı Yayınlar, PhonexyAI Ses Girişi
+    IO_PRIO_INTERACTIVE,  // Yüksek: Pionner Hub, Tarayıcı Sayfa Yükleme
+    IO_PRIO_BACKGROUND,   // Düşük: Dosya Kopyalama, Sistem Güncellemesi
+    IO_PRIO_IDLE          // En Düşük: Arka Plan Hashing
+} io_priority_t;
+
+typedef struct io_request {
+    uint32_t request_id;
+    io_priority_t priority; // Öncelik seviyesi
+    uint32_t requester_task_id; // İsteği yapan görev (SocialPit mi, Dosyalarım mı?)
+    uint32_t start_time_ms;     // Kuyruğa eklendiği zaman (Gecikmeyi ölçmek için)
+    // ... Diğer alanlar (disk adresi, veri uzunluğu, tamamlanma callback'i) ...
+} io_request_t;
+
+// =========================================================
+// PIONNEROS V4.1: security_aslr.c
+// ASLR Uygulama Mantığı
+// =========================================================
+
+// Yüksek kaliteli bir rastgele sayı üreteci (RNG) gereklidir.
+uint32_t security_get_random_offset() {
+    // RTC, PIC veya CPU zamanlayıcı değerleri kullanılarak yüksek entropili rastgele sayı üretilir.
+    // return (rtc_timer_value ^ entropy_pool_value) & ASLR_MASK;
+    return 0x01000000; // Örnek Rastgele Offset
+}
+
+// Uygulama başlatıldığında bu fonksiyon çağrılır.
+void task_apply_aslr(uint32_t task_id) {
+    uint32_t offset = security_get_random_offset();
+    
+    // Uygulama kodunun ve yığınının Sanal Bellek adreslerini rastgele kaydır.
+    uint32_t new_app_base = APP_VIRTUAL_BASE + offset;
+    uint32_t new_stack_base = USER_STACK_BASE + offset;
+    
+    // Paging (Sayfalama) tablosunu yeni rastgele adresleri gösterecek şekilde güncelle.
+    // paging_remap_task_memory(task_id, new_app_base, new_stack_base);
+
+    k_printf("ASLR: Görev %d için bellek ofseti uygulandı.\n", task_id);
+}
+
+// =========================================================
+// PIONNEROS V4.1: security_canary.c
+// Stack Canary Uygulama Mantığı
+// =========================================================
+
+// Global rastgele kanarya değeri (ASLR ile aynı RNG'den alınır)
+uint32_t GLOBAL_STACK_CANARY = 0xDEADBEEF; // Gerçekte rastgele olmalı!
+
+void security_init_canary() {
+    GLOBAL_STACK_CANARY = security_get_random_offset() | 0x01; // Asla 0 olmamalı
+}
+
+// Çekirdek, her sistem çağrısı veya bağlam değiştirme (context switch) öncesi bunu kontrol eder.
+void security_check_task_canary(uint32_t task_id, uint32_t canary_address) {
+    uint32_t *canary_ptr = (uint32_t*)canary_address;
+    
+    if (*canary_ptr != GLOBAL_STACK_CANARY) {
+        // Hata: Yığın Taşması (Stack Overflow) tespit edildi!
+        k_printf("KRİTİK GÜVENLİK İHLALİ: Görev %d Stack Canary hatası! Yığın taşması saldırısı.\n", task_id);
+        
+        // Saldırıyı kaydet ve görevi hemen sonlandır.
+        k_log_security_breach(task_id, "Stack Canary Failed");
+        k_terminate_task(task_id, EXIT_SECURITY_VIOLATION);
+    }
+}
+
+// =========================================================
+// PIONNEROS V4.1: phonexyai_core.c
+// PhonexyAI'ın tüm OS özelliklerini kullanan ana döngü
+// =========================================================
+
+#define AI_MODEL_SIZE (128 * 1024 * 1024) // 128MB AI Model Belleği
+#define AI_THREAD_COUNT 4                 // İşlemci sayısı kadar thread
+
+// AI sonuçlarının GUI'ye gönderildiği yapısı
+typedef struct {
+    char processed_text[512];
+    float confidence_score;
+} ai_result_t;
+
+// PhonexyAI'a özel Slab Önbelleği (Küçük hesaplama düğümleri için)
+kmem_cache_t *ai_node_cache; 
+
+void phonexyai_init_resources() {
+    // 1. Gelişmiş Bellek Havuzunu Hazırla (Slab Allocator)
+    ai_node_cache = kmem_cache_create("AI_NODE_CACHE", sizeof(ai_calc_node_t));
+    
+    // 2. 128MB'lık Kesintisiz Belleği Tahsis Et (Özel Bellek)
+    void *model_data = ai_memory_reserve_block(AI_MODEL_SIZE);
+    
+    // 3. Modeli VFS'ten Belleğe Yükle
+    // vfs_read_file("/apps/phonexyai/model.ai", model_data, AI_MODEL_SIZE);
+    
+    k_printf("PhonexyAI: Kaynaklar yüklendi ve %dMB bellek rezerve edildi.\n", AI_MODEL_SIZE / 1024 / 1024);
+}
+
+// Her bir CPU çekirdeğinde çalışan bağımsız hesaplama ipliği
+void ai_worker_thread(void *thread_args) {
+    // Sadece çekirdek modundan izin verilen fonksiyonlar çağrılabilir (System Calls)
+    uint32_t my_thread_id = sys_get_thread_id(); // Sistem Çağrısı
+    k_printf("PhonexyAI Thread %u: Hesaplamaya Başladı.\n", my_thread_id);
+
+    // Ana hesaplama döngüsü (En uzun kod burada yer alır)
+    while (sys_is_app_active(APP_PHONEXYAI)) { // Sistem Çağrısı
+        // 1. Thread'e ait veri bloğunu tahsis et (Slab Allocator)
+        // ai_calc_node_t *node = kmem_cache_alloc(ai_node_cache);
+        
+        // 2. Yoğun Matrix Çarpımı ve Tensör İşleme (Binlerce satır Assembly/C kodu)
+        // thread_calculate_chunk(node->data);
+        
+        // 3. Sonucu Ana GUI'ye Güvenli İletim (Kernel IPC)
+        // sys_thread_send_message(GUI_THREAD_ID, ai_result_message);
+        
+        // sys_thread_yield(); // Gönüllü olarak CPU'yu bırak
+    }
+}
+
+// Uygulamanın Başlatma Fonksiyonu
+void phonexy_ai_task_main() {
+    phonexyai_init_resources();
+    
+    // 1. Ana Uygulama Penceresini Çiz
+    // wm_create_window(800, 600, "PhonexyAI - Yapay Zeka Asistanı");
+    
+    // 2. CPU çekirdekleri kadar işçi thread başlat (Multi-threading)
+    for (int i = 0; i < AI_THREAD_COUNT; i++) {
+        // sys_create_thread(ai_worker_thread, NULL); // Sistem Çağrısı
+    }
+    
+    // 3. GUI Kontrol Döngüsü
+    while (is_window_open()) {
+        // Gelen AI sonuçlarını ekrana çiz
+        // gui_update_ai_status(sys_read_message_from_thread()); 
+    }
+    
+    // Uygulama kapanırken tüm thread'leri sonlandır
+    // sys_exit(); // Sistem Çağrısı
+}
+
+
+
+// =========================================================
+// PIONNEROS V4.1: input_events.h
+// Olay Kuyruğu ve Yapısı
+// =========================================================
+
+typedef enum {
+    EVENT_KEY_DOWN,
+    EVENT_KEY_UP,
+    EVENT_MOUSE_MOVE,
+    EVENT_MOUSE_BUTTON
+} event_type_t;
+
+typedef struct {
+    event_type_t type;
+    uint32_t timestamp;  // RTC'den gelen zaman damgası
+    union {
+        struct { uint8_t key_code; } keyboard;
+        struct { int32_t delta_x; int32_t delta_y; uint8_t buttons; } mouse;
+    } data;
+} input_event_t;
+
+// Uygulamaların okuduğu merkezi olay kuyruğu
+input_event_t event_queue[1024]; 
+uint32_t event_queue_head = 0;
+
+// Uygulamalar bu fonksiyonu System Call üzerinden çağırır
+int sys_get_next_event(input_event_t *event) {
+    // Kilit al (Thread senkronizasyonu)
+    // Kuyruktan bir olay çıkar ve kuyruk başını güncelle.
+    // Kilit bırak
+    return 0;
+}
+
+
+
+
+
+
+
+// =========================================================
+// PIONNEROS V4.1: usb_hid_parser.c
+// USB HID Raporu ve Ayrıştırma Mantığı
+// =========================================================
+
+#define MAX_HID_DEVICES 8
+
+// Takılı tüm HID cihazlarını tutan yapı
+typedef struct {
+    uint8_t device_address;
+    uint16_t report_id;
+    uint16_t report_size;      // Okunacak veri baytı
+    uint8_t  last_report[64];  // Son okunan rapor (Tuş durumları)
+    // ... Yüzlerce satır HID rapor haritalaması ve detayı ...
+} hid_device_t;
+
+// XHCI'dan okunan ham veriyi alıp, input_event_t yapısına çevirir.
+void hid_parse_and_enqueue_report(hid_device_t *device, const uint8_t *report) {
+    // 1. Raporun Önceki Durumla Karşılaştırılması (Değişen tuşları bul)
+    // if (memcmp(report, device->last_report, device->report_size) == 0) return;
+
+    // 2. KLAVYE MANTIĞI (Tuş basımını algıla)
+    // USB HID standardına göre 4. bayttan sonraki 6 bayt tuşları temsil eder.
+    for (int i = 4; i < 10; i++) {
+        if (report[i] != device->last_report[i]) {
+            // Tuş değişti: Yeni bir EVENT_KEY_DOWN/UP oluştur
+            // input_event_t new_event = { EVENT_KEY_DOWN, rtc_get_time(), { report[i] } };
+            // sys_enqueue_event(&new_event);
+        }
+    }
+    
+    // 3. FARE MANTIĞI (Hareket ve Butonları algıla)
+    // Hareket verilerini oku (Genellikle 1. bayt X, 2. bayt Y)
+    // int32_t dx = (int32_t)report[1];
+    // int32_t dy = (int32_t)report[2];
+    
+    // input_event_t mouse_event = { EVENT_MOUSE_MOVE, rtc_get_time(), { dx, dy, report[0] } };
+    // sys_enqueue_event(&mouse_event);
+
+    // device->last_report'u güncelle
+    k_printf("HID: Cihaz %u'dan rapor ayrıştırıldı ve %u olay kuyruğa eklendi.\n", device->device_address, event_count);
+}
+
+

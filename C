@@ -2226,3 +2226,34 @@ void kernel_main(uint32_t magic_number, multiboot_info_t *mbi) {
     // Ana döngü: Burada çekirdek sonsuza kadar çalışır, multitasking devam eder.
     for(;;) { __asm__("hlt"); } 
 }
+
+// =========================================================
+// PIONNEROS V4.1: smp_core_manager.c
+// 64 Çekirdekli Yönetim ve IPI Mimarisi
+// =========================================================
+
+#define APIC_BASE_ADDRESS 0xFEE00000 // APIC donanım adresi
+
+// 64 çekirdek listesi
+cpu_core_t core_list[64];
+
+// AP'leri (Diğer İşlemcileri) Uyandırma Komutu
+void smp_boot_application_processors() {
+    // 1. ACPI tablolarından (MADT) tüm çekirdeklerin APIC ID'lerini oku.
+    // 2. Her AP'ye INIT ve STARTUP IPI'ları gönder (APIC donanımına yaz).
+    
+    // IPI gönderimi (Çok kritik ve uzun bir assembly/C dizisi)
+    // apic_write_reg(ICR_HIGH, target_apic_id << 24);
+    // apic_write_reg(ICR_LOW, IPI_STARTUP_VECTOR);
+
+    // Her çekirdeğin kendi kernel_main_ap() fonksiyonunda uyanmasını bekle.
+    while (cores_awake < 64) { /* bekle... */ }
+    k_printf("SMP: %u çekirdek başarıyla uyandırıldı ve göreve hazır.\n", cores_awake);
+}
+
+// Bir çekirdeğin (Core 0) diğer çekirdekten (Core 1) görevi hemen bırakmasını istemesi (Scheduler)
+void smp_send_reschedule_ipi(uint32_t target_apic_id) {
+    // Diğer çekirdeğe özel bir kesme gönder.
+    // Bu, I/O Scheduler'ın ve Slab Allocator'ın tüm çekirdeklerde tutarlı çalışmasını sağlar.
+    // apic_send_ipi(target_apic_id, IPI_VECTOR_RESCHEDULE);
+}

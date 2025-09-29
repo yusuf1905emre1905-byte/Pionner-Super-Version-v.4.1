@@ -1,0 +1,202 @@
+// =========================================================
+// PIONNEROS V4.1: vfs.h
+// VFS Temel Yapıları
+// =========================================================
+
+#include <stdint.h>
+#include <stddef.h> // size_t için
+
+// 1. Dosya Sistemi Fonksiyon Tablosu (Soyutlama)
+// Her dosya sistemi (FAT, Ext2, SimpleFS) bu fonksiyonları uygulamalıdır.
+typedef struct {
+    int (*open)(const char *path, int flags);
+    size_t (*read)(int fd, void *buffer, size_t count);
+    size_t (*write)(int fd, const void *buffer, size_t count);
+    int (*close)(int fd);
+    // ... Dizin okuma, oluşturma vb. fonksiyonlar eklenecek ...
+} fs_driver_t;
+
+// 2. Açık Dosya Tanımlayıcısı (File Descriptor)
+// Her açık dosya için çekirdek bu yapıyı kullanır.
+typedef struct {
+    fs_driver_t *driver;    // Hangi sürücüyü kullanıyor?
+    uint64_t position;      // Dosya içindeki o anki pozisyon
+    void *private_data;     // Sürücüye özgü veri (Örn: FAT'taki Cluster numarası)
+    int flags;              // Erişim bayrakları (Oku/Yaz)
+} vfs_fd_t;
+
+// Max açık dosya sayısını tanımlayalım
+#define MAX_OPEN_FILES 256
+extern vfs_fd_t open_files[MAX_OPEN_FILES];
+
+// 3. VFS Montaj Noktası (Mount Point)
+// Hangi disk bölümünün / (root) olarak bağlandığını tutar.
+typedef struct {
+    char name[32];          // Örn: "disk0_part1"
+    char mount_path[64];    // Örn: "/" veya "/boot"
+    fs_driver_t *driver;    // Kullanılan Dosya Sistemi Sürücüsü
+    void *device_info;      // AHCI/SATA sürücü bilgisi
+} vfs_mount_t;
+
+// VFS ana fonksiyonları
+int vfs_init();
+int vfs_mount(const char *device_name, const char *mount_path, fs_driver_t *driver);
+int vfs_open(const char *path, int flags);
+size_t vfs_read(int fd, void *buffer, size_t count);
+size_t vfs_write(int fd, const void *buffer, size_t count);
+int vfs_close(int fd);
+
+// =========================================================
+// PIONNEROS V4.1: vfs.c
+// VFS Ana Fonksiyonları ve Başlatma
+// =========================================================
+
+#include "vfs.h"
+#include "k_printf.h" // Varsayımsal çekirdek çıktı fonksiyonunuz
+#include <string.h>   // memset için
+
+// Global Dosya Tanımlayıcı Tablosu ve Montaj Tablosu
+vfs_fd_t open_files[MAX_OPEN_FILES];
+// Basitlik için tek bir montaj noktası varsayalım
+vfs_mount_t root_mount; 
+int is_mounted = 0;
+
+int vfs_init() {
+    k_printf("VFS: Sanal Dosya Sistemi başlatılıyor...\n");
+    // Dosya Tanımlayıcı tablosunu sıfırla (Dosyalar kapalı)
+    memset(open_files, 0, sizeof(vfs_fd_t) * MAX_OPEN_FILES);
+    return 0;
+}
+
+// =========================================================
+// VFS Montajı (Disk Bölümünü Bağlama)
+// =========================================================
+int vfs_mount(const char *device_name, const char *mount_path, fs_driver_t *driver) {
+    if (is_mounted) {
+        k_printf("VFS Hata: Kök sistem zaten bağlı.\n");
+        return -1;
+    }
+    
+    // Yolu ve Sürücüyü Kaydet
+    strncpy(root_mount.name, device_name, 31);
+    strncpy(root_mount.mount_path, mount_path, 63);
+    root_mount.driver = driver;
+    // root_mount.device_info = ... // Burada AHCI sürücüsüne özgü bilgileri kaydetmelisiniz.
+
+    is_mounted = 1;
+    k_printf("VFS: Başarılı Montaj! '%s' -> '%s'\n", device_name, mount_path);
+    return 0;
+}
+
+// =========================================================
+// VFS Yüksek Seviye Fonksiyonları (Uygulamalar bunlarla konuşacak)
+// =========================================================
+
+int vfs_open(const char *path, int flags) {
+    // 1. Dosya Yolu Kontrolü (root_mount ile başlıyor mu?)
+    if (is_mounted == 0 || strncmp(path, root_mount.mount_path, strlen(root_mount.mount_path)) != 0) {
+        k_printf("VFS Hata: Dosya sistemi bağlı değil veya yol hatalı.\n");
+        return -1;
+    }
+    
+    // 2. Dosya Tanımlayıcı (FD) Bulma
+    int fd = -1;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (open_files[i].driver == NULL) { // NULL ise bu FD boş demektir
+            fd = i;
+            break;
+        }
+    }
+    if (fd == -1) return -1; // Açık dosya sınırı aşıldı
+
+    // 3. Dosya Sistemi Sürücüsünü Çağırma (SimpleFS, FAT vb.)
+    int driver_fd = root_mount.driver->open(path, flags);
+
+    if (driver_fd >= 0) {
+        // Başarılı: VFS yapısını doldur
+        open_files[fd].driver = root_mount.driver;
+        open_files[fd].flags = flags;
+        // Burada sürücünün geri döndürdüğü driver_fd'yi özel veriye kaydetmeliyiz.
+        open_files[fd].private_data = (void*)(uintptr_t)driver_fd; 
+        return fd; // Uygulamaya çekirdek FD'sini döndür
+    }
+
+    return -1;
+}
+
+size_t vfs_read(int fd, void *buffer, size_t count) {
+    if (fd < 0 || fd >= MAX_OPEN_FILES || open_files[fd].driver == NULL) return 0;
+    
+    // Sürücünün kendi okuma fonksiyonunu çağır
+    return open_files[fd].driver->read(
+        (int)(uintptr_t)open_files[fd].private_data, // Sürücünün kendi FD'si
+        buffer, 
+        count
+    );
+}
+// ... vfs_write ve vfs_close fonksiyonları da benzer şekilde yazılmalıdır.
+
+// =========================================================
+// PIONNEROS V4.1: simplefs.c
+// SimpleFS Sürücü Tanımları
+// =========================================================
+
+#include "vfs.h" // VFS yapısını kullanmak için
+#include "ahci.h" // Disk ile konuşmak için V4.0'da yazdığınız sürücü
+
+// ---------------------------------------------------------
+// SimpleFS'in Temel VFS Fonksiyonları
+// ---------------------------------------------------------
+int simplefs_open(const char *path, int flags);
+size_t simplefs_read(int fd, void *buffer, size_t count);
+size_t simplefs_write(int fd, const void *buffer, size_t count);
+int simplefs_close(int fd);
+
+// ---------------------------------------------------------
+// VFS'nin kullanacağı Sürücü Tablosu
+// ---------------------------------------------------------
+fs_driver_t simplefs_driver = {
+    .open = simplefs_open,
+    .read = simplefs_read,
+    .write = simplefs_write,
+    .close = simplefs_close,
+    // Diğer fonksiyonlar daha sonra eklenecek
+};
+
+// ---------------------------------------------------------
+// SimpleFS Başlatma ve Montaj
+// ---------------------------------------------------------
+int simplefs_init(const char *ahci_port_name, const char *mount_path) {
+    // 1. Dosya sistemi diskte hazır mı diye kontrol et (Superblock okuma vb.)
+    
+    // 2. VFS'ye kaydol (Montaj)
+    // AHCI sürücüsünden okuma yapacak olan sürücüyü VFS'ye tanıtıyoruz.
+    return vfs_mount(ahci_port_name, mount_path, &simplefs_driver);
+}
+
+// =========================================================
+// PIONNEROS V4.1: simplefs.c
+// simplefs_read Örneği
+// =========================================================
+size_t simplefs_read(int fd, void *buffer, size_t count) {
+    // 1. FD'den Dosya Bilgisini Al (Hangi sektörde başlıyor? Ne kadar büyük?)
+    // Şu an için FD'yi SimpleFS'in kendi iç yapısına çevirmelisiniz.
+    
+    // 2. Disk Sektörünü Hesapla
+    // Okunacak verinin, dosyanın neresine denk geldiğini ve hangi disk sektöründe olduğunu hesapla.
+    uint64_t start_sector = hesaplanmis_sektor_adresi; // Örneğin 1000. sektör
+    
+    // 3. AHCI Sürücüsünü Çağır (V4.0 Kodu)
+    // Varsayımsal AHCI sürücü fonksiyonu:
+    int success = ahci_read_sectors(
+        start_sector,           // Okumaya başlanacak disk sektörü
+        buffer,                 // Verinin yazılacağı tampon (buffer)
+        (int)(count / 512) + 1  // Okunacak sektör sayısı (512 byte/sektör)
+    );
+
+    if (success) {
+        return count; 
+    } else {
+        return 0; // Hata
+    }
+}

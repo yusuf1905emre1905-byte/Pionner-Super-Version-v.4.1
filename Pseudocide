@@ -1,0 +1,33 @@
+// Çekirdek Başlatma Anı (Login Task'ın başında)
+
+IF Login_Is_Setup() == FALSE:
+    // 1. Durum: İLK KURULUM
+    
+    // Mavi-Beyaz GUI'yi kullanarak İlk Kurulum Ekranını Çiz
+    WM_Draw_Setup_Window(COLOR_PIONNER_BLUE, "PionnerOS'a Hoş Geldiniz!");
+    
+    PIN_1 = Get_User_Input(); // İlk PIN girişi
+    EMAIL = Get_User_Input(); // E-posta girişi
+    
+    Login_Setup_Initial(PIN_1, EMAIL); // PIN'i Hashleyip diske kaydet
+    
+    // Sistem Kurulumu tamamlandı. Hemen Ana Ekrana Geç (veya yeniden başlat).
+    Start_Pionner_Hub_Task(); 
+    
+ELSE:
+    // 2. Durum: OTURUM AÇMA
+    
+    WHILE SISTEM_KILITLI == TRUE:
+        // Mavi-Beyaz GUI ile Giriş Ekranını Çiz
+        WM_Draw_Login_Window(COLOR_PIONNER_BLUE); 
+        
+        GIRIS_PIN = Get_User_Input_From_Keyboard(); 
+        
+        SONUC = Login_Authenticate(GIRIS_PIN); 
+
+        IF SONUC == 1: 
+            // BAŞARILI: Artık cihaz kilidi açıldı.
+            SISTEM_KILITLI = FALSE; 
+        ELSE: 
+            // BAŞARISIZ: Tekrar dene mesajı göster (Kullanıcı verisi güvende).
+            WM_Draw_Error_Message("PIN Hatalı. Tekrar Deneyin."); 

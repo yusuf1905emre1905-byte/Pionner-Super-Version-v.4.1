@@ -200,3 +200,353 @@ size_t simplefs_read(int fd, void *buffer, size_t count) {
         return 0; // Hata
     }
 }
+// =========================================================
+// =========================================================
+// PIONNEROS V4.1: xhci_hcr.h
+// XHCI Ana Kontrol Kayıt Yapıları (MMIO)
+// =========================================================
+typedef volatile struct {
+    uint32_t CAPLENGTH; // 0x00: Kapasite Kayıtları Uzunluğu
+    uint32_t HCIVERSION; // 0x02: Ana Kontrolcü Versiyonu
+    // ... Diğer alanlar atlandı
+    uint32_t DBLO; // 0x08: Kapı Önbellek Kaydı (Doorbell Offset)
+    uint32_t RTSLOC; // 0x0C: Çalışma Süresi Kayıtları Konumu
+    uint32_t HCCPARAMS1; // 0x10: Ana Kontrolcü Parametreleri 1
+    // ...
+} xhci_cap_regs_t;
+
+typedef volatile struct {
+    uint32_t USBCMD; // 0x00: USB Komut Kaydı (Start/Stop/Reset)
+    uint32_t USBSTS; // 0x04: USB Durum Kaydı (Hata/Hız)
+    uint32_t PAGESIZE; // 0x08: Sayfa Boyutu
+    // ... diğer çalışma kayıtları ...
+} xhci_op_regs_t;
+
+
+// Ana XHCI Yapısı
+typedef struct {
+    xhci_cap_regs_t *cap_regs; // MMIO Base Address + 0x00
+    xhci_op_regs_t  *op_regs;  // MMIO Base Address + CAPLENGTH
+    // ... Diğer alt yapılar (Portlar, Çalışma Zamanı) eklenecek
+} xhci_controller_t;
+
+// =========================================================
+// PIONNEROS V4.1: xhci.c
+// XHCI Başlatma Fonksiyonu
+// =========================================================
+
+#include "xhci_hcr.h" 
+#include "k_printf.h" 
+// ... Gerekli MMIO fonksiyonlarınız (bellek haritalama)
+
+xhci_controller_t xhci_device;
+
+int xhci_init(uint64_t base_address) {
+    k_printf("XHCI: USB 3.0 Kontrolcü Başlatılıyor. Adres: 0x%lX\n", base_address);
+
+    // XHCI'nin fiziksel adresini sanal belleğe haritala (Paging ile)
+    // Bu, çekirdek kodunuzun donanımla konuşmasını sağlar.
+    // map_mmio_region(base_address, 4096); 
+    
+    // Temel Kapasite Kayıtlarını işaretle
+    xhci_device.cap_regs = (xhci_cap_regs_t*)base_address; 
+    
+    // Çalışma Kayıtlarının adresini hesapla (CAPLENGTH'i oku)
+    uint8_t cap_len = (uint8_t)xhci_device.cap_regs->CAPLENGTH;
+    xhci_device.op_regs = (xhci_op_regs_t*)(base_address + cap_len);
+    
+    k_printf("XHCI Versiyon: %d\n", xhci_device.cap_regs->HCIVERSION);
+
+    // 1. Kontrolcüyü Durdur (Varsa çalışmayı kes)
+    xhci_device.op_regs->USBCMD &= ~0x1; // Run/Stop bitini 0 yap
+
+    // 2. Kontrolcüyü Sıfırla (Reset)
+    xhci_device.op_regs->USBCMD |= 0x2; // Host Controller Reset bitini 1 yap
+    // Reset bitinin tekrar 0 olmasını bekle (Donanım sıfırlama bitene kadar döngü)
+    while (xhci_device.op_regs->USBCMD & 0x2) { 
+        // k_sleep(1); // Çok kısa bekleme
+    }
+
+    k_printf("XHCI: Sıfırlama Tamamlandı. Kontrolcü Hazır.\n");
+
+    // Artık XHCI, PIN/Şifre için klavye ve fare aramaya başlayabilir!
+    return 0;
+}
+// =========================================================
+// PIONNEROS V4.1: xhci_ring.c
+// Komut Halkasını Ayarlama Mantığı
+// =========================================================
+
+#define CMD_RING_SIZE 64 // Komut Halkası 64 Girişten oluşsun
+typedef struct {
+    uint32_t ptr_low;
+    uint32_t ptr_high;
+    // ... Diğer alanlar
+} TRB_t; // Transfer Request Block
+
+// Çekirdek veri alanında fiziksel ve sanal adresi aynı olan bir bellek tahsis et
+TRB_t command_ring[CMD_RING_SIZE] __attribute__((aligned(64)));
+
+void xhci_setup_command_ring(xhci_controller_t *usb) {
+    // 1. Halkayı temizle
+    memset(command_ring, 0, sizeof(TRB_t) * CMD_RING_SIZE);
+    
+    // 2. Kontrolcüye Komut Halkasının Adresini ver
+    // XHCI 64-bit fiziksel adres ister.
+    uint64_t ring_phys_addr = get_physical_addr((uint64_t)command_ring); // Varsayımsal fonksiyon
+
+    // 3. Kontrolcünün CRCR (Command Ring Control Register) kaydına yaz
+    usb->op_regs->CRCR_LOW = (uint32_t)(ring_phys_addr & 0xFFFFFFF0); // Düşük 32 bit
+    usb->op_regs->CRCR_HIGH = (uint32_t)(ring_phys_addr >> 32);       // Yüksek 32 bit
+    
+    // 4. Halkayı "RUN" moduna al
+    usb->op_regs->CRCR_LOW |= 0x1; // Ring Cycle State (RCS) bitini set et
+    
+    k_printf("XHCI: Komut Halkası başarıyla kuruldu.\n");
+}
+// =========================================================
+// PIONNEROS V4.1: xhci_context.h
+// Aygıt Bağlamı ve DCBAA Tanımlamaları
+// =========================================================
+
+// XHCI 256'ya kadar aygıtı destekler, 0. giriş kullanılmaz.
+#define MAX_XHCI_SLOTS 256 
+
+// Aygıt Bağlamı Temel Adres Dizisi (DCBAA)
+// 64-bit adreslerden oluşan bir dizi.
+// Her giriş, bir aygıtın 4K'lık Device Context yapısının fiziksel adresini tutar.
+typedef uint64_t xhci_context_addr_t; 
+
+// DCBAA dizisi: 256 adet 64-bit adres. 4KB sınırına hizalanmalı.
+xhci_context_addr_t dcbaa[MAX_XHCI_SLOTS] __attribute__((aligned(4096))); 
+
+// Her bir Aygıt Bağlamının kendisi (Daha sonra detaylı doldurulacak)
+// Bu, bir aygıtın tüm konfigürasyonunu tutan 4KB'lık alandır.
+typedef struct {
+    uint32_t SLOT_CONTROL[4]; // Yuva Kontrol Bağlamı
+    uint32_t DEVICE_CONTROL[4]; // Cihaz Kontrol Bağlamı
+    // ... Uç nokta (Endpoint) bağlamları buraya gelir ...
+} xhci_device_context_t __attribute__((aligned(4096)));
+
+// Bellekte tüm aygıtlar için 4K'lık alanları ayırma
+// Örneğin, ilk 32 yuva için bellek tahsis edelim
+#define NUM_INITIAL_CONTEXTS 32
+xhci_device_context_t device_contexts[NUM_INITIAL_CONTEXTS];
+
+// ... xhci_init fonksiyonunun sonuna ekle (Kontrolcü sıfırlandıktan sonra) ...
+
+    // DCBAA'yı temizle ve ilk bağlamların adreslerini doldur
+    memset(dcbaa, 0, sizeof(dcbaa));
+    
+    // Yalnızca ilk kullanılacak yuvalar için bellek ayır ve DCBAA'ya adreslerini yaz.
+    for (int i = 1; i <= NUM_INITIAL_CONTEXTS; i++) {
+        uint64_t context_phys_addr = get_physical_addr((uint64_t)&device_contexts[i]);
+        dcbaa[i] = context_phys_addr;
+    }
+
+    // DCBAA'nın Fiziksel Adresini al
+    uint64_t dcbaa_phys_addr = get_physical_addr((uint64_t)dcbaa);
+
+    // DCBAAP (DCBAA Pointer) kaydına adresi yaz
+    usb->op_regs->DCBAAP_LOW = (uint32_t)(dcbaa_phys_addr & 0xFFFFFFF0);
+    usb->op_regs->DCBAAP_HIGH = (uint32_t)(dcbaa_phys_addr >> 32);
+
+    k_printf("XHCI: DCBAA Kurulumu Tamamlandı. Yuvalar Hazır.\n");
+
+// ... XHCI'yı çalıştırma komutu (Run/Stop bitini 1 yap)
+    usb->op_regs->USBCMD |= 0x1; 
+// =========================================================
+// PIONNEROS V4.1: xhci_command.c
+// Enable Slot (Yuva Açma) Komutu
+// =========================================================
+
+// TRB Türleri (XHCI standardı)
+#define TRB_TYPE_ENABLE_SLOT 9
+
+typedef struct {
+    uint32_t parameter_low;
+    uint32_t parameter_high;
+    uint32_t status;
+    uint32_t control; // Son 8 bit (Tür ve Yuva Tipi)
+} xhci_trb_t;
+
+// Komut halkasına yeni bir TRB yazan varsayımsal fonksiyon
+void xhci_enqueue_command(uint32_t type, uint8_t slot_type) {
+    // 1. Halkada sonraki boş TRB'yi bul (TRB_t *trb)
+    
+    // 2. TRB'yi doldur
+    trb->parameter_low = 0;
+    trb->parameter_high = 0;
+    trb->status = 0;
+    
+    // 3. Kontrol Alanını ayarla: Komut Türü (Bit 10:6) ve Yuva Tipi (Bit 4:0)
+    uint32_t control = (TRB_TYPE_ENABLE_SLOT << 10) | (slot_type);
+    trb->control = control;
+    
+    // 4. Halkayı ilerlet (Cycle bitini ters çevir ve Ring Pointer'ı güncelle)
+
+    // 5. Kontrolcüye Haber Ver (Doorbell)
+    // xhci_device.op_regs->DOORBELL[0] = 0; // Komut Halkası (Doorbell 0) için
+}
+
+void xhci_enumerate_devices(xhci_controller_t *usb) {
+    k_printf("XHCI: Yuva Açma Komutu Gönderiliyor...\n");
+
+    // Enable Slot komutunu gönder. Slot Tipi '0' (Varsayılan) kullanıyoruz.
+    xhci_enqueue_command(TRB_TYPE_ENABLE_SLOT, 0); 
+    
+    // Not: Gerçek bir uygulamada, burada Event Ring'den (Olay Halkası) 
+    // "Yuva Açıldı" olayını (Event) beklememiz gerekir.
+}
+
+// =========================================================
+// PIONNEROS V4.1: xhci_event.c
+// Olay Halkası Yapıları
+// =========================================================
+
+#define EVENT_RING_SIZE 256
+// TRB yapısı burada da kullanılır.
+// TRB_t event_ring[EVENT_RING_SIZE] __attribute__((aligned(64))); 
+
+// Olay Halkası Boyut Tablosu (Event Ring Segment Table - ERST)
+// Olay Halkasının adreslerini tutar (XHCI'a nereye bakacağını söyler).
+typedef struct {
+    uint64_t ring_segment_base_addr; // Olay Halkasının fiziksel adresi
+    uint32_t ring_segment_size;      // Boyutu (TRB sayısı)
+    uint32_t reserved;               // 0 olmalı
+} xhci_erst_entry_t;
+
+// ERST dizisi: Bellekte oluşturulmalı ve 64 bayt hizalanmalı.
+// Basitlik için sadece bir girişli tablo kullanıyoruz.
+xhci_erst_entry_t erst[1] __attribute__((aligned(64)));
+
+void xhci_setup_event_ring(xhci_controller_t *usb) {
+    // 1. Olay Halkasını (event_ring) temizle (memset)
+    // 2. ERST girişini doldur:
+    uint64_t ring_phys_addr = get_physical_addr((uint64_t)event_ring); 
+    erst[0].ring_segment_base_addr = ring_phys_addr;
+    erst[0].ring_segment_size = EVENT_RING_SIZE;
+    
+    // 3. XHCI Çalışma Zamanı (Runtime) Kayıtlarını bul
+    // XHCI'ın 0x0C'deki RTSLOC kaydından sonra gelir.
+    // xhci_rt_regs_t *rt_regs = (xhci_rt_regs_t*)(usb->op_regs + usb->cap_regs->RTSLOC);
+
+    // 4. ERST'nin adresini XHCI'a bildir
+    uint64_t erst_phys_addr = get_physical_addr((uint64_t)erst);
+    // rt_regs->ERSTBA_LOW = (uint32_t)(erst_phys_addr & 0xFFFFFFF0);
+    // rt_regs->ERSTBA_HIGH = (uint32_t)(erst_phys_addr >> 32);
+
+    // 5. Kesmeleri (Interrupts) Ayarla (MSI-X)
+    // Bu, çekirdek tarafında en zor adımdır.
+    // k_setup_msix_for_xhci(bus, device, function, XHCI_IRQ_VECTOR);
+    
+    k_printf("XHCI: Olay Halkası kuruldu. Kesme bekleniyor.\n");
+}
+
+// =========================================================
+// PIONNEROS V4.1: xhci_msix.c
+// MSI-X Kayıtlarının Kurulumu
+// =========================================================
+
+// Varsayalım ki XHCI'ın PCI Konfigürasyon adresi elimizde
+// pci_get_capability_ptr(bus, dev, func, PCI_CAP_MSIX) ile bulunur.
+
+#define MSIX_MESSAGE_CONTROL 0x00
+#define MSIX_TABLE_OFFSET    0x04
+#define MSIX_PBA_OFFSET      0x08 
+
+void xhci_enable_msix(xhci_controller_t *usb, uint8_t bus, uint8_t dev, uint8_t func) {
+    // 1. MSI-X Yeteneği (Capability) Adresini Bul
+    uint32_t msix_cap_ptr = pci_get_capability_ptr(bus, dev, func, 0x11); // 0x11 = MSI-X Cap ID
+
+    if (msix_cap_ptr == 0) {
+        k_printf("XHCI Hata: MSI-X yeteneği bulunamadı, eski kesmeye düşülüyor.\n");
+        // Geleneksel kesme (Legacy Interrupt) yolu ayarlanmalıdır.
+        return;
+    }
+
+    // 2. Kontrol Kaydını Oku (Kaç tablo girişi var?)
+    uint16_t msg_control = pci_config_read_word(bus, dev, func, msix_cap_ptr + MSIX_MESSAGE_CONTROL);
+    int num_msix_entries = (msg_control & 0x7FF) + 1; // Tablo giriş sayısı
+    
+    k_printf("XHCI: %d adet MSI-X Kesme Girişi destekleniyor.\n", num_msix_entries);
+
+    // 3. Tablo Bilgilerini Oku (Tablonun Nerede Olduğu)
+    // MSI-X Tablosunun adresi ve BAR (Temel Adres Kaydı)
+    uint32_t table_offset = pci_config_read_dword(bus, dev, func, msix_cap_ptr + MSIX_TABLE_OFFSET);
+    uint8_t table_bar = (uint8_t)(table_offset & 0x7);
+    uint32_t table_mem_offset = table_offset & 0xFFFFFFF8;
+
+    // 4. MSI-X Tablosuna Erişim (MMIO)
+    // Bu, çekirdeğin o BAR'ı haritalamasını ve table_mem_offset'e erişmesini gerektirir.
+    // XHCI genellikle ilk (0.) tablo girişini Olay Halkası için kullanır.
+    
+    // 5. Kesme Bilgilerini Yaz
+    // İlk tablo girişine (XHCI için tek bir giriş yeterli):
+    // * Hedef Adres (APIC/HPET Adresi)
+    // * Mesaj Verisi (Vektör Numarası, örn: 0x80)
+    // * Maskeleme Bitini (M) temizle (Kesmenin etkin olduğunu belirt)
+
+    // 6. XHCI Kontrolcüsünde Kesmeyi Etkinleştir
+    // XHCI'ın Ana Kontrol Kaydında (USBCMD) Interrupt Enable bitini 1 yap.
+    usb->op_regs->USBCMD |= (1 << 2); 
+    
+    k_printf("XHCI: MSI-X Kurulumu Tamamlandı. Fare/Klavye Verisi Hazır.\n");
+}// =========================================================
+// PIONNEROS V4.1: xhci_interrupt.c
+// XHCI Kesme İşleyicisi
+// =========================================================
+
+#include "xhci_event.h" // Olay Halkası yapıları
+#include "k_input.h"    // Varsayımsal Klavye/Fare Giriş Yöneticisi
+
+void xhci_interrupt_handler(int vector) {
+    // 1. Durum Kontrolü
+    // USBSTS kaydını oku (usb->op_regs->USBSTS). Eğer I/O hatası varsa bildir.
+
+    // 2. Olay Halkasını Tara
+    // XHCI, bir veya daha fazla olay (TRB) yazmış olabilir. Hepsini okumalıyız.
+    // Olay Halkasının İşaretçisini (Dequeue Pointer) güncel tutmalısınız.
+    
+    xhci_trb_t *event_trb = get_next_event_trb(); 
+
+    while (event_trb != NULL) {
+        // 3. Olay Tipini Belirle
+        uint32_t trb_type = (event_trb->control >> 10) & 0x3F;
+
+        switch (trb_type) {
+            case TRB_TYPE_TRANSFER_EVENT:
+                // Fare Hareketi veya Tuş Basımı
+                // Bu, klavye/fare'den gelen verinin kendisidir.
+                // Verinin tutulduğu Transfer Descriptor (TD) adresini okuyun.
+                // Veriyi çekirdek tamponuna kopyalayın (hid_report).
+                
+                // Klavye veya Fare verisini işleyen fonksiyona yönlendir
+                process_hid_report(hid_report); 
+                break;
+
+            case TRB_TYPE_COMMAND_COMPLETION_EVENT:
+                // Komut Başarılı (Örn: Yuva Açma veya Adres Atama başarılı)
+                // Bu, Numaralandırma (Enumeration) sürecini devam ettirmek için kritiktir.
+                handle_command_completion(event_trb);
+                break;
+                
+            case TRB_TYPE_PORT_STATUS_CHANGE:
+                // USB Aygıtı Takıldı/Çıkarıldı
+                // Yeniden Numaralandırma başlatılmalıdır.
+                handle_port_status_change(event_trb);
+                break;
+        }
+
+        // 4. Halkayı İlerlet ve XHCI'a Onayla
+        // Olayı işledikten sonra Halkadan kaldır (Dequeue Pointer'ı güncelle).
+        event_trb = get_next_event_trb();
+    }
+    
+    // 5. Kesmeyi Sonlandır (Emanating bitini 1 yap)
+    // MSI-X sisteminde sonlandırma işlemi yapılmalıdır.
+    
+    // USBSTS'teki olay bayraklarını temizle (yazarak temizle)
+    // usb->op_regs->USBSTS = event_flags_to_clear;
+}
+

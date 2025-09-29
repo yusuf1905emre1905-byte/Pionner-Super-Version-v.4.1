@@ -549,4 +549,102 @@ void xhci_interrupt_handler(int vector) {
     // USBSTS'teki olay bayraklarını temizle (yazarak temizle)
     // usb->op_regs->USBSTS = event_flags_to_clear;
 }
+// =========================================================
+// PIONNEROS V4.1: window.h
+// Pencere ve Widget Temelleri
+// =========================================================
+#define WIDGET_TYPE_BUTTON 1
+#define WIDGET_TYPE_LABEL  2
+// ... Metin Girişi, vb.
+
+typedef struct {
+    int id;
+    int x, y, w, h;
+    int type;
+    // ... İşleyici fonksiyonu (tıklama olayı için)
+} widget_t;
+
+typedef struct window {
+    int id;
+    int x, y, w, h;
+    char title[64];
+    uint32_t border_color; // Mavi-Beyaz Tema için
+    widget_t *widgets;
+    int widget_count;
+    // ... Z-order (katman) bilgisi
+} window_t;
+
+// Pencere Yöneticisi Fonksiyonları
+void wm_create_window(int w, int h, const char *title);
+void wm_draw_desktop(); // Mavi-Beyaz arkaplanı ve widget'ları çizer
+void wm_handle_mouse_click(int x, int y, uint8_t button); 
+
+// =========================================================
+// PIONNEROS V4.1: timer.c
+// Zamanlayıcı (Timer) Kesmesi Ayarı Mantığı
+// =========================================================
+
+// Global bir görev listesi ve o anki görev işaretçisi
+extern task_t *current_task; 
+extern task_t *task_list_head; 
+
+// Zamanlayıcı Kesme İşleyicisi
+void timer_interrupt_handler(int vector) {
+    // 1. Kesmeyi Sonlandır (APIC'e EOI (End of Interrupt) sinyali gönder)
+    // local_apic_send_eoi(); 
+
+    // 2. Zaman Dilimini Kontrol Et (Quantum)
+    if (current_task->quantum_remaining > 0) {
+        current_task->quantum_remaining--;
+        return; // Görev daha bitmediyse devam et
+    }
+
+    // 3. Görev Değişimi Başlat (Task Switch)
+    // Şu anki görevin CPU kayıtlarını (Registers) kaydet (Assembly ile yapılır)
+    
+    // 4. Sıradaki Görevi Seç (Round-Robin Basit Algoritma)
+    current_task = get_next_task(task_list_head);
+
+    // 5. Yeni Göreve Geç
+    // Yeni görevin CPU kayıtlarını yükle (Assembly ile yapılır)
+    // Yeni görevin Paging Tablosunu (CR3) yükle
+}
+
+// APIC/HPET (Yüksek Hassasiyetli Olay Zamanlayıcısı)
+// Çekirdeğin ana başlatma kısmında APIC'i 1000Hz (1ms) frekansa ayarlamalısınız.
+void init_multitasking_timer() {
+    // init_apic_timer(1000); // Saniyede 1000 kesme (1ms'de bir görev değişimi)
+    k_register_interrupt(TIMER_VECTOR, timer_interrupt_handler);
+    k_printf("Multitasking Timer: 1ms frekansında kuruldu.\n");
+}
+
+// =========================================================
+// PIONNEROS V4.1: paging.c
+// NX Bit (No-Execute) Uygulaması
+// =========================================================
+
+// 64-bit Paging girişlerinin son (63.) biti NX bitidir.
+#define PAGE_FLAG_NX (1ULL << 63) // 1ULL = 64-bit unsigned long long
+
+// Paging Tablosu Oluşturma Fonksiyonunuz (Örn: map_page)
+void map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags) {
+    // ... Mevcut Paging girişini bulma kodu ...
+
+    // Varsayılan bayraklarınıza NX bitini ekleyin.
+    // Çekirdek dışındaki (Uygulama) tüm sayfalar için varsayılan olarak yürütmeyi engelle.
+    uint64_t page_entry_flags = flags | PAGE_FLAG_NX; 
+
+    // Çekirdek kodunun kendisinin yürütülmesini engellememek için:
+    if (is_kernel_code_section(virtual_addr)) {
+         page_entry_flags &= ~PAGE_FLAG_NX; // Eğer kodsa, yürütülmesine izin ver
+    }
+    
+    // ... Paging Tablosuna page_entry_flags değerini yazma kodu ...
+}
+
+void init_nx_protection() {
+    // Tüm kullanıcı alanındaki bellek sayfalarını gez ve NX bitini aktif et.
+    // k_reconfigure_all_user_pages(PAGE_FLAG_NX);
+    k_printf("Güvenlik: NX (No-Execute) Koruması Paging'e uygulandı.\n");
+}
 

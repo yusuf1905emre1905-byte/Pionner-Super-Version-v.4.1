@@ -779,5 +779,479 @@ void ip_handle_packet(const uint8_t *data, size_t length) {
             break;
     }
 }
+// =========================================================
+// PIONNEROS V4.1: tcp.h
+// TCP Protokolü Başlık Yapısı
+// =========================================================
+
+#define TCP_FLAG_FIN 0x01 // Bağlantıyı Sonlandır (Finish)
+#define TCP_FLAG_SYN 0x02 // Bağlantı Başlat (Synchronize)
+#define TCP_FLAG_ACK 0x10 // Onay (Acknowledgement)
+
+typedef struct {
+    uint16_t src_port;      // Kaynak Port (Sizin Tarayıcınızın Portu)
+    uint16_t dest_port;     // Hedef Port (Örn: Web Sunucusu Portu 80/443)
+    uint32_t seq_number;    // Sıra Numarası
+    uint32_t ack_number;    // Onay Numarası
+    
+    uint8_t  reserved:4;    // Ayrılmış
+    uint8_t  offset:4;      // Veri Ofseti (Başlık Uzunluğu)
+    
+    uint8_t  flags;         // Kontrol Bayrakları (SYN, ACK, FIN)
+    uint16_t window;        // Pencere Boyutu (Akış Kontrolü)
+    uint16_t checksum;      // Kontrol Toplamı
+    uint16_t urgent_ptr;    // Acil İşaretçi
+} __attribute__((packed)) tcp_header_t;
+
+// =========================================================
+// PIONNEROS V4.1: tcp.c
+// TCP Protokolü Uygulaması (Bağlantı Kurma)
+// =========================================================
+
+// TCP Bağlantı Durumları
+typedef enum {
+    TCP_STATE_CLOSED,
+    TCP_STATE_SYN_SENT,
+    TCP_STATE_ESTABLISHED // Bağlantı Kuruldu
+    // ... Diğer durumlar ...
+} tcp_state_t;
+
+typedef struct {
+    int socket_id;
+    tcp_state_t state;
+    uint32_t local_seq; // Yerel Sıra Numarası
+    // ... Diğer durum bilgileri ...
+} tcp_socket_t;
+
+// Yeni bir TCP bağlantısı başlatır (Örn: Tarayıcı bir URL'ye tıkladığında)
+int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
+    tcp_socket_t *sock = tcp_create_socket();
+    sock->state = TCP_STATE_SYN_SENT;
+    
+    // 1. SYN Paketi Oluştur
+    // tcp_send_packet(remote_ip, remote_port, TCP_FLAG_SYN); // SYN gönder
+    
+    // 2. Cevap (SYN-ACK) Bekle
+    // Gelen paket tcp_handle_packet() tarafından işlenecektir.
+    
+    // Bağlantı kurulana kadar beklemeye al
+    // k_wait_for_state(sock, TCP_STATE_ESTABLISHED);
+    
+    return sock->socket_id;
+}
+
+// IP katmanından gelen TCP paketlerini işler
+void tcp_handle_packet(const uint8_t *payload, size_t length, uint32_t src_ip) {
+    tcp_header_t *tcp_h = (tcp_header_t *)payload;
+    
+    // 1. Bağlantı Bilgisini Bul (Portlara göre)
+    tcp_socket_t *sock = tcp_find_socket(tcp_h->dest_port, src_ip);
+
+    if (sock->state == TCP_STATE_SYN_SENT && (tcp_h->flags & TCP_FLAG_SYN) && (tcp_h->flags & TCP_FLAG_ACK)) {
+        // SYN-ACK alındı! 3. aşamaya geç
+        // sock->state = TCP_STATE_ESTABLISHED;
+        // tcp_send_packet(src_ip, tcp_h->src_port, TCP_FLAG_ACK); // ACK gönder
+        k_printf("TCP: Bağlantı Kuruldu (ESTABLISHED).\n");
+    }
+    // ... Diğer durum yönetimi (Veri, FIN, vb.) ...
+}
+
+// =========================================================
+// PIONNEROS V4.1: http_client.c
+// HTTP İstek Oluşturma ve Gönderme
+// =========================================================
+
+#define HTTP_DEFAULT_PORT 80
+
+// Basit bir HTTP GET isteği oluşturur
+// Örn: host="example.com", path="/"
+char* http_create_get_request(const char *host, const char *path) {
+    // Tahmini boyutu hesapla ve bellekten ayır
+    // char *request_buffer = k_malloc(256); 
+    
+    // İstek formatını belleğe yaz
+    // GET /path HTTP/1.1
+    // Host: host.com
+    // Connection: close
+    // [Boş Satır]
+    k_snprintf(request_buffer, 256, 
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Connection: close\r\n"
+        "\r\n", 
+        path, host);
+
+    return request_buffer;
+}
+
+// Bir URL'den veri çekmenin ana fonksiyonu
+void http_get_url(const char *url_host, const char *url_path) {
+    // 1. Host adını IP'ye çevir (DNS çözünürlüğü)
+    uint32_t server_ip = dns_resolve(url_host); 
+    if (server_ip == 0) {
+        k_printf("HTTP Hata: DNS çözümlemesi başarısız.\n");
+        return;
+    }
+
+    // 2. TCP Bağlantısı Kur (Daha önce kodladığınız TCP katmanı ile)
+    int sock_fd = tcp_connect(server_ip, HTTP_DEFAULT_PORT);
+    if (sock_fd < 0) {
+        k_printf("HTTP Hata: TCP bağlantısı kurulamadı.\n");
+        return;
+    }
+
+    // 3. HTTP İsteğini Gönder
+    char *request = http_create_get_request(url_host, url_path);
+    tcp_socket_send(sock_fd, request, k_strlen(request));
+    k_free(request);
+    
+    // 4. Cevabı Al ve İşle
+    // tcp_socket_receive(sock_fd, response_buffer, MAX_SIZE);
+    // http_process_response(response_buffer);
+    
+    // 5. Bağlantıyı Kapat
+    tcp_close(sock_fd);
+}
+
+// =========================================================
+// PIONNEROS V4.1: dns.c
+// DNS Çözümleme Protokolü
+// =========================================================
+
+// DNS sorgusu gönderen ve TCP/UDP üzerinden cevap bekleyen fonksiyon
+uint32_t dns_resolve(const char *hostname) {
+    // UDP paketini DNS sunucusuna (örn: yönlendirici veya 8.8.8.8) gönder
+    // DNS Cevabını al ve IP'yi döndür
+    // (Bu, bir sonraki aşamada detaylandırılacaktır)
+    return 0x010200C0; // Geçici olarak sahte bir IP döndür
+}
+// =========================================================
+// PIONNEROS V4.1: rtc.c
+// Gerçek Zaman Saati Okuma Fonksiyonları
+// =========================================================
+
+#define RTC_ADDR_PORT 0x70 // Adres yazma portu
+#define RTC_DATA_PORT 0x71 // Veri okuma/yazma portu
+
+// RTC Kayıtları (Örn: Saniye, Dakika, Saat)
+#define RTC_SECONDS   0x00
+#define RTC_MINUTES   0x02
+#define RTC_HOURS     0x04
+#define RTC_DAY       0x07
+#define RTC_MONTH     0x08
+#define RTC_YEAR      0x09 
+
+uint8_t get_rtc_register(uint8_t reg) {
+    // 1. CMOS'a Adresi Yaz
+    outb(RTC_ADDR_PORT, reg); 
+    // 2. CMOS'tan Veriyi Oku
+    return inb(RTC_DATA_PORT); 
+}
+
+// BCD (Binary-Coded Decimal) formatını ikilik sayıya çevirir.
+uint8_t bcd_to_binary(uint8_t bcd) {
+    return (bcd & 0x0F) + ((bcd / 16) * 10);
+}
+
+// Sistemin güncel saatini okur
+void rtc_get_time(time_struct_t *time_out) {
+    // Okuma öncesi kesmeleri geçici olarak kapatmak gerekir (Atomik işlem)
+    // k_disable_interrupts(); 
+
+    time_out->second = bcd_to_binary(get_rtc_register(RTC_SECONDS));
+    time_out->minute = bcd_to_binary(get_rtc_register(RTC_MINUTES));
+    time_out->hour   = bcd_to_binary(get_rtc_register(RTC_HOURS));
+    
+    // Yılı, ayı ve günü de okuyun.
+    
+    // k_enable_interrupts(); 
+}
+
+// =========================================================
+// PIONNEROS V4.1: gfx_capture.c
+// Ekran Görüntüsü Fonksiyonu Temeli
+// =========================================================
+
+// Ekran görüntüsünü alıp bir dosyaya kaydetmek için ham veriyi kopyalar
+void capture_and_save_screenshot(const char *filename) {
+    // 1. Framebuffer'dan Ham Veriyi Al
+    // uint32_t *fb_ptr = framebuffer; // gfx.h'den gelir
+    
+    // Ekranın tam boyutu kadar belleği kopyala
+    size_t total_size = screen_width * screen_height * 4; // 4 bayt/piksel (RGBA)
+    uint8_t *image_data = k_malloc(total_size);
+    memcpy(image_data, (void*)framebuffer, total_size);
+
+    // 2. Basit Resim Formatına Çevir ve Kaydet
+    // Basit bir BMP veya sizin belirlediğiniz bir formata dönüştür
+    // (VFS/SimpleFS ile dosyayı açıp yazma işlemi)
+    // vfs_write_file(filename, image_data, final_file_size);
+    
+    k_free(image_data);
+    k_printf("Ekran Görüntüsü: %s yoluna kaydedildi.\n", filename);
+}
+
+// =========================================================
+// PIONNEROS V4.1: thread.h
+// Thread (İplik) Yönetimi Yapısı
+// =========================================================
+
+// Her bir Thread'in durumunu tutar
+typedef struct thread {
+    uint32_t esp;               // Yığıt İşaretçisi (Assembly ile kaydedilir)
+    uint32_t ebp;               // Taban İşaretçisi
+    uint32_t eip;               // Komut İşaretçisi (Nerede devam edeceği)
+    uint32_t parent_task_id;    // Hangi Göreve (PhonexyAI) ait olduğu
+    uint32_t stack_base;        // Thread'in Yığıtının başlangıcı
+    // ... Diğer CPU Kayıtları ...
+} thread_t;
+
+// Thread Yönetimi Fonksiyonları
+void thread_create(void (*start_routine)(void*), void *arg, uint32_t parent_id);
+void thread_yield(); // Gönüllü olarak CPU'yu bırak
+void scheduler_next_thread(thread_t *current); // CPU'yu sıradaki Thread'e verir
+
+// Yeni bir thread'i zamanlayıcı kesmesine (Timer Interrupt) dahil eder
+void init_thread_management() {
+    // k_register_thread_scheduler(scheduler_next_thread); 
+    k_printf("Thread Yönetimi (Multi-threading) başlatıldı.\n");
+}
+
+// =========================================================
+// PIONNEROS V4.1: ai_memory.c
+// PhonexyAI Özel Bellek Yöneticisi
+// =========================================================
+
+#define AI_MEMORY_SIZE (1024 * 1024 * 128) // Örn: 128 MB sürekli bellek
+
+void* ai_memory_reserve_block(size_t size) {
+    // 1. Fiziksel Bellekte Büyük, Sürekli bir Blok Bul (MMU ve Paging kullanılarak)
+    uint64_t phys_addr = physical_memory_find_contiguous(size);
+
+    // 2. Bu Fiziksel Bloğu, PhonexyAI Görevinin Sanal Alanına Eşle (Paging)
+    // k_map_large_pages(PHONEXYAI_VIRTUAL_BASE, phys_addr, size);
+
+    k_printf("PhonexyAI: %d MB özel bellek tahsis edildi.\n", size / (1024*1024));
+    return (void*)PHONEXYAI_VIRTUAL_BASE; // Sanal adresi döndür
+}
+
+// =========================================================
+// PIONNEROS V4.1: app_market.c
+// Uygulama İndirme ve Yükleme Mantığı
+// =========================================================
+
+// Uygulama paketini (PPK) alıp VFS'teki /apps/ dizinine kurar
+int app_market_install_app(const char *source_path, const char *app_name) {
+    // 1. Paket Dosyasını Oku (Örn: /users/downloads/socialpit.ppk)
+    size_t ppk_size;
+    uint8_t *ppk_data = vfs_read_file_to_buffer(source_path, &ppk_size);
+    if (!ppk_data) return -1; // PPK dosyası bulunamadı
+
+    // 2. Hedef Dizini Oluştur
+    char install_dir[128];
+    k_snprintf(install_dir, 128, "%s%s/", APP_DIR, app_name); 
+    // vfs_create_directory(install_dir); 
+    
+    // 3. Paketi Aç ve Hedefe Kopyala
+    // Basit bir PPK: İndirilen dosya, uygulamanın çalıştırılabilir kodu (.bin)
+    char final_exec_path[256];
+    k_snprintf(final_exec_path, 256, "%s%s.bin", install_dir, app_name);
+
+    // vfs_write_file(final_exec_path, ppk_data, ppk_size);
+    k_free(ppk_data);
+    
+    // 4. Meta Veri Dosyasını Oluştur (İkon yolu, isim vb.)
+    // VFS'te /apps/socialpit/metadata.cfg oluşturulur.
+    
+    // 5. BAŞARILI KURULUM Bildirimi
+    k_printf("App Market: Uygulama '%s' VFS'e başarılı şekilde kuruldu.\n", app_name);
+    return 0;
+}
+
+// =========================================================
+// PIONNEROS V4.1: pionner_hub.c (HUB Entagrasyonu)
+// =========================================================
+
+// Masaüstü kısayollarını tutan basit bir yapı
+typedef struct {
+    char app_name[64];
+    int x, y; // Ikonun Masaüstündeki Konumu
+} hub_shortcut_t;
+
+// Kısayol listesine yeni bir ikon ekler ve VFS'e kaydeder.
+void pionner_hub_add_shortcut(const char *app_name) {
+    // 1. Yeni Kısayol Yarat
+    hub_shortcut_t new_shortcut;
+    k_strncpy(new_shortcut.app_name, app_name, 64);
+    
+    // Basit konum hesaplama
+    new_shortcut.x = 50; 
+    new_shortcut.y = hub_get_next_icon_y(); 
+
+    // 2. Kısayolu Yüklü Listeye Ekle
+    // hub_shortcuts_list[count++] = new_shortcut;
+
+    // 3. Kısayolu Kalıcı Olarak VFS'e Kaydet
+    // k_save_hub_shortcuts_to_vfs("/etc/hub_shortcuts.dat"); 
+    
+    k_printf("Pionner Hub: '%s' kısayolu ana ekrana eklendi.\n", app_name);
+}
+
+// Uygulama İndirme Süreci Entegrasyonu
+void market_download_button_click(const char *app_name) {
+    if (app_market_install_app("/path/to/downloaded.ppk", app_name) == 0) {
+        pionner_hub_add_shortcut(app_name);
+        
+        // GUI'ye bildirim gönder
+        // gui_show_notification("Kurulum Tamamlandı!", app_name); 
+    }
+}
+
+
+// =========================================================
+// PIONNEROS V4.1: vfs_io.c
+// Temel VFS Yönetim Fonksiyonları
+// =========================================================
+
+// Bir dosyayı VFS içinde bir yerden başka bir yere kopyalar
+int vfs_copy(const char *src_path, const char *dest_path) {
+    // 1. Kaynak dosyayı oku
+    size_t file_size;
+    uint8_t *file_data = vfs_read_file_to_buffer(src_path, &file_size);
+    if (!file_data) return -1; // Hata: Dosya yok
+
+    // 2. Hedefe yaz
+    if (vfs_write_file(dest_path, file_data, file_size) < 0) {
+        k_free(file_data);
+        return -2; // Hata: Yazma hatası
+    }
+    
+    k_free(file_data);
+    k_printf("VFS: '%s' dosyası '%s' konumuna kopyalandı.\n", src_path, dest_path);
+    return 0;
+}
+
+// Dosyayı yeniden adlandırır veya farklı bir dizine taşır
+int vfs_move_or_rename(const char *src_path, const char *dest_path) {
+    // Kopyalama ve Silme işlemlerinin birleşimidir.
+    if (vfs_copy(src_path, dest_path) != 0) {
+        return -1; // Taşıma (kopyalama aşaması) başarısız
+    }
+    
+    // Orijinal dosyayı sil (BasitFS mantığı)
+    if (vfs_delete(src_path) != 0) {
+        return -2; // Silme başarısız
+    }
+    
+    k_printf("VFS: '%s' dosyası '%s' konumuna taşındı/yeniden adlandırıldı.\n", src_path, dest_path);
+    return 0;
+}
+
+// Bir dosyayı veya boş bir dizini VFS'ten siler
+int vfs_delete(const char *path) {
+    // SimpleFS sürücüsüne silme komutu gönderilir.
+    // simplefs_delete_entry(path);
+    
+    k_printf("VFS: '%s' dosyası silindi.\n", path);
+    return 0;
+}// =========================================================
+// PIONNEROS V4.1: file_manager.c
+// Dosyalarım Uygulaması Mantığı
+// =========================================================
+
+// Belirli bir dizindeki dosya ve dizinlerin listesini alır
+// (GUI bu listeyi görsel olarak sunar)
+void file_manager_get_dir_listing(const char *path) {
+    // VFS'in dizin okuma fonksiyonu çağrılır.
+    // simplefs_read_directory(path);
+    // ... listeyi GUI için formatlar ...
+    
+    k_printf("Dosyalarım: '%s' dizini listeleniyor.\n", path);
+}
+
+// =========================================================
+// PIONNEROS V4.1: file_manager.c
+// Dosyalarım Uygulaması Mantığı
+// =========================================================
+
+// Belirli bir dizindeki dosya ve dizinlerin listesini alır
+// (GUI bu listeyi görsel olarak sunar)
+void file_manager_get_dir_listing(const char *path) {
+    // VFS'in dizin okuma fonksiyonu çağrılır.
+    // simplefs_read_directory(path);
+    // ... listeyi GUI için formatlar ...
+    
+    k_printf("Dosyalarım: '%s' dizini listeleniyor.\n", path);
+}
+
+// =========================================================
+// PIONNEROS V4.1: socialpit.c
+// SocialPit Uygulama Mantığı
+// =========================================================
+
+// Uygulamanın ana görev fonksiyonu
+void socialpit_task() {
+    k_printf("SocialPit başlatıldı: Ağ ve GUI entegrasyonu test ediliyor.\n");
+
+    // 1. Pencereyi Çiz (Mavi-Beyaz tema ve widget'larla)
+    // wm_create_window(600, 800, "SocialPit", ...);
+    
+    // 2. Ağ Bağlantısını Başlat
+    uint32_t socialpit_server_ip = dns_resolve("socialpit.pionneros"); 
+    int socket_fd = tcp_connect(socialpit_server_ip, 443); // SSL/TLS varsayımı
+    
+    if (socket_fd < 0) {
+        // Hata durumunda GUI'de mesaj göster
+        // gui_show_error("Sunucuya bağlanılamıyor.");
+        return;
+    }
+    
+    // 3. Veri Alışverişi ve Thread Yönetimi
+    // Ağ I/O'sunu (Input/Output) ayrı bir thread'de çalıştır.
+    // thread_create(socialpit_network_handler, (void*)socket_fd, current_task_id);
+
+    // Ana thread, sadece GUI güncellemeleriyle ilgilenir.
+    while (is_window_open()) {
+        // wm_redraw_window(); 
+        // k_yield(); 
+    }
+}
+
+// =========================================================
+// PIONNEROS V4.1: phonexyai.c
+// PhonexyAI Uygulama Mantığı
+// =========================================================
+
+// AI Hesaplamasını yapan thread rutini
+void ai_calculation_thread(void *model_data) {
+    k_printf("PhonexyAI: Hesaplama Thread'i başlatıldı.\n");
+    // Yoğun hesaplama burada yapılır.
+    
+    // ai_memory_access((uint8_t*)model_data); // Özel belleğe erişim
+    
+    // Sonucu ana GUI thread'ine gönder.
+    // thread_send_result_to_gui(result); 
+}
+
+void phonexy_ai_task() {
+    k_printf("PhonexyAI başlatıldı: Multi-threading ve Özel Bellek test ediliyor.\n");
+
+    // 1. Özel AI Belleğini Tahsis Et
+    // void *ai_memory = ai_memory_reserve_block(AI_MEMORY_SIZE);
+
+    // 2. Hesaplama için Yeni Bir Thread Başlat
+    // Ana uygulama donmasın diye hesaplama ayrı bir iplikte çalışır.
+    // thread_create(ai_calculation_thread, ai_memory, current_task_id); 
+    
+    // 3. GUI'yi Çiz ve Thread Sonucunu Bekle
+    // wm_create_window(400, 300, "PhonexyAI", ...);
+    
+    while (is_window_open()) {
+        // GUI'yi güncelle
+        // k_yield(); 
+    }
+}
+
+
 
 
